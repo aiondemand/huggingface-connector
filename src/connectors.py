@@ -9,6 +9,7 @@ from enum import StrEnum, auto
 import aiod
 from aiod.authentication import set_token, Token
 from huggingface_hub import list_datasets, DatasetInfo, dataset_info
+from dotenv import load_dotenv
 import requests
 
 
@@ -34,7 +35,8 @@ def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
             ds_license = license_
         elif isinstance(license_, list):
             ds_license = license_[0]
-            logger.warning(f"Multiple licenses for dataset {dataset.id}: {license_}")
+            if len(license_) > 1:
+                logger.warning(f"Multiple licenses for dataset {dataset.id}: {license_}")
         else:
             logger.warning(f"Cannot parse license data for {dataset.id}: {license_!r}")
 
@@ -53,7 +55,7 @@ def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
         name=dataset.id,
         same_as=f"https://huggingface.co/datasets/{dataset.id}",
         description=dict(plain=description),
-        date_published=dataset.created_at if hasattr(dataset, "created_at") else None,
+        date_published=dataset.created_at.isoformat() if hasattr(dataset, "created_at") else None,
         license=ds_license,
         distribution=distributions,
         is_accessible_for_free=not dataset.private,
@@ -107,20 +109,25 @@ def upsert_dataset(dataset: DatasetInfo):
     local_dataset = _convert_dataset_to_aiod(dataset)
     try:
         aiod_dataset = aiod.datasets.get_asset_from_platform(platform="huggingface", platform_identifier=dataset._id)
-        aiod.datasets.replace(aiod_dataset['identifier'], metadata=local_dataset)
+        aiod.datasets.replace(identifier=aiod_dataset['identifier'], metadata=local_dataset)
+        logger.debug(f"Updated dataset {dataset.id}({dataset._id}): {aiod_dataset['identifier']}")
     except KeyError:
-        aiod.datasets.register(metadata=local_dataset)
+        identifier = aiod.datasets.register(metadata=local_dataset)
+        if isinstance(identifier, str):
+            logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {identifier}")
+        elif isinstance(identifier, requests.Response):
+            logging.warning(f"Error uploading dataset ({identifier.status_code}: {identifier.json()}")
 
 
 def parse_args():
     parser = ArgumentParser()
 
     parser.add_argument(
-        "mode",
+        "--mode",
         choices=list(Modes),
     )
     parser.add_argument(
-        "value",
+        "--value",
         default=None,
         required=False,
         type=str,
@@ -129,6 +136,18 @@ def parse_args():
             "For mode 'SINCE' this must be a valid timestamp in ISO-8601 format."
             "Cannot be set with mode 'ALL'."
         )
+    )
+    parser.add_argument(
+        "--app-log-level",
+        choices=list(logging.getLevelNamesMapping()),
+        default='INFO',
+        help="Emit all log messages generated of at least this level by the app."
+    )
+    parser.add_argument(
+        '--root-log-level',
+        choices=list(logging.getLevelNamesMapping()),
+        default='ERROR',
+        help="Emit all log messages generated of at least this level by the app's dependencies."
     )
     args = parser.parse_args()
     if args.mode == Modes.ALL and args.value:
@@ -154,6 +173,9 @@ def configure_connector():
 def main():
     configure_connector()
     args = parse_args()
+    logging.basicConfig(level=args.root_log_level)
+    logger.setLevel(args.app_log_level)
+
     match (args.mode, args.value):
         case Modes.ID, id_:
             dataset = dataset_info(id_)
