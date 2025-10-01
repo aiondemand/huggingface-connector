@@ -123,7 +123,7 @@ def upsert_dataset(dataset: DatasetInfo) -> int:
             logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {response}")
             return HTTPStatus.OK
         elif isinstance(response, requests.Response):
-            logging.warning(f"Error uploading dataset ({response.status_code}: {response.json()}")
+            logging.warning(f"Error uploading dataset ({response.status_code}: {response.content}")
             return response.status_code
         raise
 
