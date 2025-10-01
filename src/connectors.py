@@ -2,6 +2,7 @@ from datetime import datetime
 import math
 import os
 from argparse import ArgumentParser
+from http import HTTPStatus
 from pathlib import Path
 import logging
 from enum import StrEnum, auto
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 HUGGING_FACE_PARQUET_URL = "https://datasets-server.huggingface.co/parquet"
 REQUEST_TIMEOUT = 10
 MAX_TEXT = 65535
+PLATFORM_NAME = "example"
 
 
 def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
@@ -50,7 +52,7 @@ def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
     # Related Resources?
 
     return dict(
-        platform="huggingface",
+        platform=PLATFORM_NAME,
         platform_resource_identifier=dataset._id,  # See REST API #385, #392
         name=dataset.id,
         same_as=f"https://huggingface.co/datasets/{dataset.id}",
@@ -90,11 +92,11 @@ def delete_removed_assets() -> None:
 
     def aiod_datasets(batch_size: int = BATCH_SIZE):
         offset = 0
-        datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform="huggingface")
+        datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
         while datasets:
             yield from datasets
             offset += BATCH_SIZE
-            datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform="huggingface")
+            datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
 
     for dataset in aiod_datasets():
         if not dataset_info(dataset.name):
@@ -105,19 +107,25 @@ def delete_removed_assets() -> None:
             aiod.datasets.delete(dataset['identifier'])
 
 
-def upsert_dataset(dataset: DatasetInfo):
+def upsert_dataset(dataset: DatasetInfo) -> int:
     local_dataset = _convert_dataset_to_aiod(dataset)
     try:
-        aiod_dataset = aiod.datasets.get_asset_from_platform(platform="huggingface", platform_identifier=dataset._id)
-        aiod.datasets.replace(identifier=aiod_dataset['identifier'], metadata=local_dataset)
-        logger.debug(f"Updated dataset {dataset.id}({dataset._id}): {aiod_dataset['identifier']}")
+        aiod_dataset = aiod.datasets.get_asset_from_platform(platform=PLATFORM_NAME, platform_identifier=dataset._id)
+        response = aiod.datasets.replace(identifier=aiod_dataset['identifier'], metadata=local_dataset)
+        if response.status_code == HTTPStatus.OK:
+            logger.debug(f"Updated dataset {dataset.id}({dataset._id}): {aiod_dataset['identifier']}")
+        else:
+            logger.warning(f"Could not update {aiod_dataset['identifier']} ({response.status_code}): {response.json()}")
+        return response.status_code
     except KeyError:
-        identifier = aiod.datasets.register(metadata=local_dataset)
-        if isinstance(identifier, str):
-            logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {identifier}")
-        elif isinstance(identifier, requests.Response):
-            logging.warning(f"Error uploading dataset ({identifier.status_code}: {identifier.json()}")
-
+        response = aiod.datasets.register(metadata=local_dataset)
+        if isinstance(response, str):
+            logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {response}")
+            return HTTPStatus.OK
+        elif isinstance(response, requests.Response):
+            logging.warning(f"Error uploading dataset ({response.status_code}: {response.json()}")
+            return response.status_code
+        raise
 
 def parse_args():
     parser = ArgumentParser()
@@ -137,16 +145,17 @@ def parse_args():
             "Cannot be set with mode 'ALL'."
         )
     )
+    log_levels = [level.lower() for level in logging.getLevelNamesMapping()]
     parser.add_argument(
         "--app-log-level",
-        choices=list(logging.getLevelNamesMapping()),
-        default='INFO',
+        choices=log_levels,
+        default='info',
         help="Emit all log messages generated of at least this level by the app."
     )
     parser.add_argument(
         '--root-log-level',
-        choices=list(logging.getLevelNamesMapping()),
-        default='ERROR',
+        choices=log_levels,
+        default='error',
         help="Emit all log messages generated of at least this level by the app's dependencies."
     )
     args = parser.parse_args()
@@ -173,8 +182,8 @@ def configure_connector():
 def main():
     configure_connector()
     args = parse_args()
-    logging.basicConfig(level=args.root_log_level)
-    logger.setLevel(args.app_log_level)
+    logging.basicConfig(level=args.root_log_level.upper())
+    logger.setLevel(args.app_log_level.upper())
 
     match (args.mode, args.value):
         case Modes.ID, id_:
