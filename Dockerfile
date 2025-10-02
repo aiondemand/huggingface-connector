@@ -12,5 +12,5 @@ RUN .venv/bin/uv pip install -r /app/pyproject.toml
 COPY . /app
 RUN .venv/bin/uv pip install file:///app
 
-ENTRYPOINT [".venv/bin/python", "/app/src/connectors.py"]
+ENTRYPOINT [".venv/bin/python", "/app/src/connector.py"]
 CMD ["--mode", "all"]
