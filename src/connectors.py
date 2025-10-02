@@ -169,14 +169,19 @@ def parse_args():
 def configure_connector():
     global BATCH_SIZE
 
-    load_dotenv()
+    dot_file = Path("~/.aiod/huggingface/.env").expanduser()
+    if load_dotenv(dot_file):
+        logging.info(f"Not able to load any environment variables from {dot_file}")
 
     BATCH_SIZE = os.getenv("AIOD_HF_BATCH_SIZE", 25)
     HF_API_KEY = os.getenv("AIOD_HF_API_KEY", None)
     WAIT_TIME = os.getenv("AIOD_HF_WAIT_TIME", 0.1)
 
-    token = Token.from_file(Path('secret.toml'))
-    set_token(token)
+    token = os.getenv("CLIENT_SECRET")
+    if not token:
+        logger.error("CLIENT_SECRET not set")
+        quit(1)
+    set_token(Token(client_secret=token))
 
 
 def main():
@@ -203,7 +208,4 @@ def main():
 
 
 if __name__ == '__main__':
-    from pathlib import Path
-    print(Path("~").expanduser().absolute())
-    print('--')
     main()
