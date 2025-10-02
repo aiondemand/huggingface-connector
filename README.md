@@ -31,7 +31,15 @@ The client secret must be provided to the Docker container as an environment var
 Please contact the Keycloak service maintainer to obtain said credentials you need if you are in charge of deploying this Hugging Face connector.
 
 ## Running the Connector
+You will need to mount the aiondemand configuration to `/home/appuser/.aiod/config.toml` and provide environment variables directly with `-e` or through mounting the dotfile in `/home/appuser/.aiod/huggingface/.env`. The [`script/run.sh`](script/run.sh) script provides a convenience that automatically does this. 
+It takes one positional argument that has to be `local`, `test`, or `prod` to use the respective files in the `script` folder for configuration.
+Any following arguments are interpreted as arguments to the main script.
 For the latest commandline arguments, use `docker run aiondemand/huggingface-connector --help`.
+Some example invocations that use the `script/run.sh` script:
+
+ - `script/run.sh local --mode id --value omarkamali/wikipedia-monthly --app-log-level debug` syncs one specific hugging face dataset, and produces debug logs for the connector only.
+ - `script/run.sh test --mode since --value 2025-09-30T00:00 --root-log-level debug` syncs all datasets modified after 2025-09-30T00:00 (in reverse chronological order).
+ - `script/run.sh prod --mode all --root-log-level info` indexes all datasets on Hugging Face, producing info logs for the connector and all its dependencies (this is the default).
 
 ## Development
 You can test the connector when running the [metadata catalogue](https://github.com/aiondemand/aiod-rest-api) locally.
