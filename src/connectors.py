@@ -203,4 +203,7 @@ def main():
 
 
 if __name__ == '__main__':
+    from pathlib import Path
+    print(Path("~").expanduser().absolute())
+    print('--')
     main()
