@@ -1,3 +1,4 @@
+import datetime as dt
 from datetime import datetime
 import math
 import os
@@ -50,7 +51,6 @@ def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
         description = description[: MAX_TEXT - len(text_break)] + text_break
 
     # Related Resources?
-
     return dict(
         platform=PLATFORM_NAME,
         platform_resource_identifier=dataset._id,  # See REST API #385, #392
@@ -141,8 +141,8 @@ def parse_args():
         type=str,
         help=(
             "For mode 'ID' this must be a Hugging Face identifier. "
-            "For mode 'SINCE' this must be a valid timestamp in ISO-8601 format."
-            "Cannot be set with mode 'ALL'."
+            "For mode 'SINCE' this must be a valid timestamp in ISO-8601 format,"
+            "assuming an UTC timezone. Cannot be set with mode 'ALL'."
         )
     )
     log_levels = [level.lower() for level in logging.getLevelNamesMapping()]
@@ -190,11 +190,13 @@ def main():
             dataset = dataset_info(id_)
             upsert_dataset(dataset)
         case Modes.SINCE, timestamp:
-            parsed_time = datetime.fromisoformat(timestamp)
-            for dataset in list_datasets(full=True, filter=...):
+            parsed_time = datetime.fromisoformat(timestamp).replace(tzinfo=dt.UTC)
+            for dataset in list_datasets(full=True, sort="last_modified", direction=-1):
+                if dataset.last_modified < parsed_time:
+                    break
                 upsert_dataset(dataset)
         case Modes.ALL, None:
-            for dataset in list_datasets(full=True):
+            for dataset in list_datasets(full=True, sort="last_modified", direction=1):
                 upsert_dataset(dataset)
         case _:
             raise NotImplemented(f"Unexpected arguments: {args}")
