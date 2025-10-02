@@ -8,8 +8,6 @@ For more information on how to test this connector locally as a springboard for 
 This package is work in progress.
 
 - [ ] Automatically publish to DockerHub on release
-- [ ] Add better pre-flight check and error messages
-- [ ] Provide utility for mounting `~/.aiod/config.toml` and passing the client secret
 - [ ] Add tests
 - [ ] ? Adding back feature for registering the publications
 

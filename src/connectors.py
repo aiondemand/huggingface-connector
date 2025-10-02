@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 HUGGING_FACE_PARQUET_URL = "https://datasets-server.huggingface.co/parquet"
 REQUEST_TIMEOUT = 10
 MAX_TEXT = 65535
-PLATFORM_NAME = "example"
+PLATFORM_NAME = "huggingface"
 
 
 def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
@@ -90,7 +90,10 @@ def _get_distribution_data(dataset: DatasetInfo) -> list[dict]:
 def delete_removed_assets() -> None:
     """Removes assets from the AI-on-Demand catalogue if they are removed from Hugging Face."""
 
-    def aiod_datasets(batch_size: int = BATCH_SIZE):
+    def aiod_datasets(batch_size: int | None = None):
+        if batch_size is None:
+            batch_size = BATCH_SIZE
+
         offset = 0
         datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
         while datasets:
@@ -126,6 +129,7 @@ def upsert_dataset(dataset: DatasetInfo) -> int:
             logging.warning(f"Error uploading dataset ({response.status_code}: {response.content}")
             return response.status_code
         raise
+
 
 def parse_args():
     parser = ArgumentParser()
@@ -168,27 +172,47 @@ def parse_args():
 
 def configure_connector():
     global BATCH_SIZE
+    global PLATFORM_NAME
 
     dot_file = Path("~/.aiod/huggingface/.env").expanduser()
-    if load_dotenv(dot_file):
-        logging.info(f"Not able to load any environment variables from {dot_file}")
+    if dot_file.exists() and load_dotenv(dot_file):
+        logger.info(f"Loaded variables from {dot_file}")
+    else:
+        reason = "unknown reason" if dot_file else "file does not exist"
+        logger.info(f"No environment variables loaded from {dot_file}: {reason}.")
 
-    BATCH_SIZE = os.getenv("AIOD_HF_BATCH_SIZE", 25)
-    HF_API_KEY = os.getenv("AIOD_HF_API_KEY", None)
-    WAIT_TIME = os.getenv("AIOD_HF_WAIT_TIME", 0.1)
+    BATCH_SIZE = os.getenv("AIOD_BATCH_SIZE", 25)
+    PLATFORM_NAME = os.getenv("PLATFORM_NAME", PLATFORM_NAME)
 
     token = os.getenv("CLIENT_SECRET")
-    if not token:
-        logger.error("CLIENT_SECRET not set")
-        quit(1)
+    assert token, "CLIENT_SECRET environment variable not set"
+
+    masked_token = token[:4] + '*' * (len(token) + 4)
+    logger.info(f"{'AI-on-Demand API server:':25} {aiod.config.api_server}")
+    logger.info(f"{'Platform Name:':25} {PLATFORM_NAME}")
+    logger.info(f"{'Authentication server:':25} {aiod.config.auth_server}")
+    logger.info(f"{'Client ID:':25} {aiod.config.client_id}")
+    logger.info(f"{'Using secret:':25} {masked_token}")
+
     set_token(Token(client_secret=token))
+    user = aiod.get_current_user()
+
+    required_role = f"platform_{PLATFORM_NAME}"
+    wrong_platform_msg = (
+        f"Client roles {user.roles} do not include required {required_role!r} role."
+        "Please make sure the `PLATFORM_NAME` environment variable is configured correctly, "
+        "or contact your Keycloak administrator."
+    )
+    assert required_role in user.roles, wrong_platform_msg
+
+    logger.info("Successfully authenticated and connected to AI-on-Demand.")
 
 
 def main():
-    configure_connector()
     args = parse_args()
     logging.basicConfig(level=args.root_log_level.upper())
     logger.setLevel(args.app_log_level.upper())
+    configure_connector()
 
     match (args.mode, args.value):
         case Modes.ID, id_:
