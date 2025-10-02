@@ -1,6 +1,6 @@
 #!/bin/bash
 
-WHICH="${1:-local}"
+WHICH="${1:-prod}"
 shift
 
 ABSOLUTE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
