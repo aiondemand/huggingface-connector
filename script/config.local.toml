@@ -1,0 +1,3 @@
+api_server = 'http://localhost/'
+auth_server = 'http://localhost/aiod-auth/'
+client_id = 'sdk-service'
