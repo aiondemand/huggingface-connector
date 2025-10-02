@@ -196,7 +196,7 @@ def main():
                     break
                 upsert_dataset(dataset)
         case Modes.ALL, None:
-            for dataset in list_datasets(full=True, sort="last_modified", direction=1):
+            for dataset in list_datasets(full=True):
                 upsert_dataset(dataset)
         case _:
             raise NotImplemented(f"Unexpected arguments: {args}")
