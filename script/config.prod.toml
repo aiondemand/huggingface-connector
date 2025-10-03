@@ -1,3 +1,3 @@
 api_server = 'https://api.aiod.eu/'
-auth_server = 'https://aiod.eu/aiod-auth/'
+auth_server = 'https://auth.aiod.eu/aiod-auth/'
 client_id = 'platform_huggingface'
