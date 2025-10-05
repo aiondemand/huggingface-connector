@@ -9,7 +9,6 @@ This package is work in progress.
 
 - [ ] Automatically publish to DockerHub on release
 - [ ] Add tests
-- [ ] ? Adding back feature for registering the publications
 
 ## Installation
 You can use the image directly from Docker Hub (TODO) or build it locally.

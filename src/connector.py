@@ -46,8 +46,6 @@ def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
         else:
             logger.warning(f"Cannot parse license data for {dataset.id}: {license_!r}")
 
-    # add citations...
-
     description = getattr(dataset, "description", None)
     if description and len(description) > MAX_TEXT:
         text_break = " [...]"
