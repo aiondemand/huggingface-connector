@@ -1,4 +1,5 @@
 import datetime as dt
+import time
 from datetime import datetime
 from json import JSONDecodeError
 
@@ -32,6 +33,7 @@ MAX_TEXT = 65535
 PLATFORM_NAME = "huggingface"
 HUGGING_FACE_API_KEY = None
 STOP_ON_UNEXPECTED_ERROR = False
+PER_DATASET_DELAY = None
 
 
 def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
@@ -200,7 +202,7 @@ def parse_args():
 
 
 def configure_connector():
-    global BATCH_SIZE, PLATFORM_NAME, HUGGING_FACE_API_KEY, STOP_ON_UNEXPECTED_ERROR
+    global BATCH_SIZE, PLATFORM_NAME, HUGGING_FACE_API_KEY, STOP_ON_UNEXPECTED_ERROR, PER_DATASET_DELAY
 
     dot_file = Path("~/.aiod/huggingface/.env").expanduser()
     if dot_file.exists() and load_dotenv(dot_file):
@@ -212,6 +214,7 @@ def configure_connector():
     BATCH_SIZE = os.getenv("AIOD_BATCH_SIZE", 25)
     PLATFORM_NAME = os.getenv("PLATFORM_NAME", PLATFORM_NAME)
     HUGGING_FACE_API_KEY = key if (key := os.getenv("AIOD_HF_API_KEY")) else None
+    PER_DATASET_DELAY = float(delay) if (delay := os.getenv("PER_DATASET_DELAY")) else None
     STOP_ON_UNEXPECTED_ERROR = os.getenv("STOP_ON_UNEXPECTED_ERROR", STOP_ON_UNEXPECTED_ERROR)
 
     token = os.getenv("CLIENT_SECRET")
@@ -221,6 +224,7 @@ def configure_connector():
     logger.info(f"{'aiondemand version:':25} {aiod.version}")
     logger.info(f"{'hugging face hub version:':25} {huggingface_hub.__version__}")
     logger.info(f"{'STOP_ON_UNEXPECTED_ERROR:':25} {STOP_ON_UNEXPECTED_ERROR}")
+    logger.info(f"{'PER_DATASET_DELAY:':25} {PER_DATASET_DELAY}")
     logger.info(f"{'AI-on-Demand API server:':25} {aiod.config.api_server}")
     logger.info(f"{'Platform Name:':25} {PLATFORM_NAME}")
     if HUGGING_FACE_API_KEY:
@@ -262,9 +266,13 @@ def main():
                 if dataset.last_modified < parsed_time:
                     break
                 upsert_dataset(dataset)
+                if PER_DATASET_DELAY:
+                    time.sleep(PER_DATASET_DELAY)
         case Modes.ALL, None:
             for dataset in list_datasets(full=True, token=HUGGING_FACE_API_KEY):
                 upsert_dataset(dataset)
+                if PER_DATASET_DELAY:
+                    time.sleep(PER_DATASET_DELAY)
         case _:
             raise NotImplemented(f"Unexpected arguments: {args}")
 
