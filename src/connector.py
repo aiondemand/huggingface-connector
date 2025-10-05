@@ -1,5 +1,6 @@
 import datetime as dt
 from datetime import datetime
+from json import JSONDecodeError
 
 import huggingface_hub
 import math
@@ -30,6 +31,7 @@ REQUEST_TIMEOUT = 10
 MAX_TEXT = 65535
 PLATFORM_NAME = "huggingface"
 HUGGING_FACE_API_KEY = None
+STOP_ON_UNEXPECTED_ERROR = False
 
 
 def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
@@ -73,7 +75,12 @@ def _get_distribution_data(dataset: DatasetInfo) -> list[dict]:
         timeout=REQUEST_TIMEOUT
     )
     if not response.ok:
-        msg = response.json()["error"]
+        try:
+            msg = response.json()["error"]
+        except JSONDecodeError:
+            msg = response.content
+        except KeyError:
+            msg = response.json()
         logger.warning(f"Unable to retrieve parquet info for dataset '{dataset.id}': '{msg}'")
         return []
     return [
@@ -112,31 +119,44 @@ def delete_removed_assets() -> None:
 
 
 def upsert_dataset(dataset: DatasetInfo) -> int:
-    local_dataset = _convert_dataset_to_aiod(dataset)
     try:
-        aiod_dataset = aiod.datasets.get_asset_from_platform(
-            platform=PLATFORM_NAME,
-            platform_identifier=dataset._id,
-            data_format="json",
+        local_dataset = _convert_dataset_to_aiod(dataset)
+
+        try:
+            aiod_dataset = aiod.datasets.get_asset_from_platform(
+                platform=PLATFORM_NAME,
+                platform_identifier=dataset._id,
+                data_format="json",
+            )
+        except KeyError:
+            response = aiod.datasets.register(metadata=local_dataset)
+            if isinstance(response, str):
+                logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {response}")
+                return HTTPStatus.OK
+            elif isinstance(response, requests.Response):
+                logger.warning(f"Error uploading dataset ({response.status_code}: {response.content}")
+                return response.status_code
+            raise
+
+        if "identifier" not in aiod_dataset:
+            raise RuntimeError(
+                f"Unexpected server response retrieving Hugging Face dataset "
+                f"{dataset.id} ({dataset._id}) from AI-on-Demand: {aiod_dataset}"
+            )
+
+        response = aiod.datasets.replace(identifier=aiod_dataset['identifier'], metadata=local_dataset)
+        if response.status_code == HTTPStatus.OK:
+            logger.debug(f"Updated dataset {dataset.id}({dataset._id}): {aiod_dataset['identifier']}")
+        else:
+            logger.warning(f"Could not update {aiod_dataset['identifier']} for repository {dataset.id} ({response.status_code}): {response.content}")
+    except Exception as e:
+        logger.exception(
+            msg=f"Exception encountered when upserting dataset {dataset.id} ({dataset._id}.",
+            exc_info=e,
         )
-    except KeyError:
-        response = aiod.datasets.register(metadata=local_dataset)
-        if isinstance(response, str):
-            logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {response}")
-            return HTTPStatus.OK
-        elif isinstance(response, requests.Response):
-            logger.warning(f"Error uploading dataset ({response.status_code}: {response.content}")
-            return response.status_code
-        raise
-
-    if "identifier" not in aiod_dataset:
-        raise RuntimeError(f"Unexpected server response for Hugging Face dataset {dataset.id} ({dataset._id}): {aiod_dataset}")
-
-    response = aiod.datasets.replace(identifier=aiod_dataset['identifier'], metadata=local_dataset)
-    if response.status_code == HTTPStatus.OK:
-        logger.debug(f"Updated dataset {dataset.id}({dataset._id}): {aiod_dataset['identifier']}")
-    else:
-        logger.warning(f"Could not update {aiod_dataset['identifier']} for repository {dataset.id} ({response.status_code}): {response.content}")
+        if STOP_ON_UNEXPECTED_ERROR:
+            raise
+        return -1
     return response.status_code
 
 
@@ -180,7 +200,7 @@ def parse_args():
 
 
 def configure_connector():
-    global BATCH_SIZE, PLATFORM_NAME, HUGGING_FACE_API_KEY
+    global BATCH_SIZE, PLATFORM_NAME, HUGGING_FACE_API_KEY, STOP_ON_UNEXPECTED_ERROR
 
     dot_file = Path("~/.aiod/huggingface/.env").expanduser()
     if dot_file.exists() and load_dotenv(dot_file):
@@ -191,17 +211,22 @@ def configure_connector():
 
     BATCH_SIZE = os.getenv("AIOD_BATCH_SIZE", 25)
     PLATFORM_NAME = os.getenv("PLATFORM_NAME", PLATFORM_NAME)
-    HUGGING_FACE_API_KEY = os.getenv("AIOD_HF_API_KEY")
+    HUGGING_FACE_API_KEY = key if (key := os.getenv("AIOD_HF_API_KEY")) else None
+    STOP_ON_UNEXPECTED_ERROR = os.getenv("STOP_ON_UNEXPECTED_ERROR", STOP_ON_UNEXPECTED_ERROR)
 
     token = os.getenv("CLIENT_SECRET")
     assert token, "CLIENT_SECRET environment variable not set"
 
-    masked_hf_key = '*' * (len(HUGGING_FACE_API_KEY) + 4) + HUGGING_FACE_API_KEY[-4:]
     masked_token = '*' * (len(token) + 4) + token[-4:]
     logger.info(f"{'aiondemand version:':25} {aiod.version}")
     logger.info(f"{'hugging face hub version:':25} {huggingface_hub.__version__}")
+    logger.info(f"{'STOP_ON_UNEXPECTED_ERROR:':25} {STOP_ON_UNEXPECTED_ERROR}")
     logger.info(f"{'AI-on-Demand API server:':25} {aiod.config.api_server}")
     logger.info(f"{'Platform Name:':25} {PLATFORM_NAME}")
+    if HUGGING_FACE_API_KEY:
+        masked_hf_key = '*' * (len(HUGGING_FACE_API_KEY) + 4) + HUGGING_FACE_API_KEY[-4:] if HUGGING_FACE_API_KEY else 'not set'
+    else:
+        masked_hf_key = 'not set'
     logger.info(f"{'Hugging Face API key:':25} {masked_hf_key}")
     logger.info(f"{'Authentication server:':25} {aiod.config.auth_server}")
     logger.info(f"{'Client ID:':25} {aiod.config.client_id}")
