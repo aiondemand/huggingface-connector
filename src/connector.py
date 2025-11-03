@@ -27,11 +27,9 @@ class Modes(StrEnum):
 
 
 logger = logging.getLogger(__name__)
-HUGGING_FACE_PARQUET_URL = "https://datasets-server.huggingface.co/parquet"
 REQUEST_TIMEOUT = 10
 MAX_TEXT = 65535
-PLATFORM_NAME = "huggingface"
-HUGGING_FACE_API_KEY = None
+PLATFORM_NAME = "openml"
 STOP_ON_UNEXPECTED_ERROR = False
 PER_DATASET_DELAY = None
 
@@ -175,9 +173,8 @@ def parse_args():
         required=False,
         type=str,
         help=(
-            "For mode 'ID' this must be a Hugging Face identifier. "
-            "For mode 'SINCE' this must be a valid timestamp in ISO-8601 format,"
-            "assuming an UTC timezone. Cannot be set with mode 'ALL'."
+            "For mode 'ID' this must be an openml identifier. "
+            "For mode 'SINCE' this must be an openml identifier. Cannot be set with mode 'ALL'."
         )
     )
     log_levels = [level.lower() for level in logging.getLevelNamesMapping()]
@@ -202,9 +199,9 @@ def parse_args():
 
 
 def configure_connector():
-    global BATCH_SIZE, PLATFORM_NAME, HUGGING_FACE_API_KEY, STOP_ON_UNEXPECTED_ERROR, PER_DATASET_DELAY
+    global BATCH_SIZE, PLATFORM_NAME, STOP_ON_UNEXPECTED_ERROR, PER_DATASET_DELAY
 
-    dot_file = Path("~/.aiod/huggingface/.env").expanduser()
+    dot_file = Path("~/.aiod/openml/.env").expanduser()
     if dot_file.exists() and load_dotenv(dot_file):
         logger.info(f"Loaded variables from {dot_file}")
     else:
@@ -213,7 +210,6 @@ def configure_connector():
 
     BATCH_SIZE = os.getenv("AIOD_BATCH_SIZE", 25)
     PLATFORM_NAME = os.getenv("PLATFORM_NAME", PLATFORM_NAME)
-    HUGGING_FACE_API_KEY = key if (key := os.getenv("AIOD_HF_API_KEY")) else None
     PER_DATASET_DELAY = float(delay) if (delay := os.getenv("PER_DATASET_DELAY")) else None
     STOP_ON_UNEXPECTED_ERROR = os.getenv("STOP_ON_UNEXPECTED_ERROR", STOP_ON_UNEXPECTED_ERROR)
 
@@ -260,7 +256,7 @@ def main():
         case Modes.ID, id_:
             dataset = dataset_info(id_)
             upsert_dataset(dataset)
-        case Modes.SINCE, timestamp:
+        case Modes.SINCE, id_:
             parsed_time = datetime.fromisoformat(timestamp).replace(tzinfo=dt.UTC)
             for dataset in list_datasets(full=True, sort="last_modified", direction=-1, token=HUGGING_FACE_API_KEY):
                 if dataset.last_modified < parsed_time:

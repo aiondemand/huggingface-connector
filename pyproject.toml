@@ -1,7 +1,7 @@
 [project]
-name="aiod-huggingface-connector"
+name="aiod-openml-connector"
 dependencies = [
-    "huggingface_hub",
+    "openml",
     "aiondemand",
     "python-dotenv",
 ]
