@@ -20,7 +20,6 @@ class Modes(StrEnum):
     ALL = auto()
     SINCE = auto()
     ID = auto()
-    # DELETE = auto()
 
 
 logger = logging.getLogger(__name__)
@@ -132,31 +131,6 @@ def _convert_dataset_to_aiod(dataset: dict) -> dict:
         keyword=dataset.get("tag", []),
         size=size,
     )
-
-
-def delete_removed_assets() -> None:
-    """Removes assets from the AI-on-Demand catalogue if they are removed from Hugging Face."""
-
-    def aiod_datasets(batch_size: int | None = None):
-        if batch_size is None:
-            batch_size = BATCH_SIZE
-
-        offset = 0
-        datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
-        while datasets:
-            yield from datasets
-            offset += BATCH_SIZE
-            datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
-
-    for dataset in aiod_datasets():
-        raise NotImplemented()
-        dataset_not_on_openml = False
-        if dataset_not_on_openml:
-            logger.info(
-                f"Dataset {dataset.name} ({dataset.platform_resource_identifier}) "
-                f"no longer on OpenML. Removing asset from AI-on-Demand"
-            )
-            aiod.datasets.delete(dataset['identifier'])
 
 
 def upsert_dataset(dataset: dict) -> int:
