@@ -1,11 +1,9 @@
 import datetime as dt
 import time
 from datetime import datetime
-from json import JSONDecodeError
-
-import huggingface_hub
-import math
 import os
+
+import dateutil.parser
 from argparse import ArgumentParser
 from http import HTTPStatus
 from pathlib import Path
@@ -14,7 +12,6 @@ from enum import StrEnum, auto
 
 import aiod
 from aiod.authentication import set_token, Token
-from huggingface_hub import list_datasets, DatasetInfo, dataset_info
 from dotenv import load_dotenv
 import requests
 
@@ -29,70 +26,112 @@ class Modes(StrEnum):
 logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 10
 MAX_TEXT = 65535
+MAX_DESCRIPTION_LENGTH = 1800
 PLATFORM_NAME = "openml"
 STOP_ON_UNEXPECTED_ERROR = False
 PER_DATASET_DELAY = None
 
 
-def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
-    distributions = _get_distribution_data(dataset)
+class ParsingError(Exception):
+    pass
 
-    ds_license = None
-    if (card := dataset.card_data) and (license_ := card.get("license")):
-        if isinstance(license_, str):
-            ds_license = license_
-        elif isinstance(license_, list):
-            ds_license = license_[0]
-            if len(license_) > 1:
-                logger.warning(f"Multiple licenses for dataset {dataset.id}: {license_}")
-        else:
-            logger.warning(f"Cannot parse license data for {dataset.id}: {license_!r}")
 
-    description = getattr(dataset, "description", None)
-    if description and len(description) > MAX_TEXT:
+class ServerError(Exception):
+    pass
+
+
+def list_datasets(from_: int | None = None):
+
+    def paginate_all_datasets(items_per_page: int = 50):
+        url_data = f"https://www.openml.org/api/v1/json/data/list/limit/{items_per_page}/offset/{{offset}}"
+        for offset in range(0, 1_000_000, items_per_page):
+            response = requests.get(url_data.format(offset), timeout=REQUEST_TIMEOUT)
+            if not response.ok:
+                status_code = response.status_code
+                msg = response.json()["error"]["message"]
+                err_msg = f"Error while fetching {url_data} from OpenML: ({status_code}) {msg}"
+                raise ServerError(err_msg)
+
+            try:
+                dataset_summaries = response.json()["data"]["dataset"]
+                if dataset_summaries:
+                    yield from dataset_summaries
+                else:
+                    break
+            except Exception:
+                raise ParsingError(f"Could not parse response ({response.status_code}): {response.content}", exc_info=True)
+
+    from_ = from_ or 0
+    for dataset in paginate_all_datasets():
+        try:
+            identifier = dataset["did"]
+            if identifier < from_:
+                continue
+        except KeyError:
+            logger.error(f"Received invalid summary: {dataset}", exc_info=True)
+            continue
+
+        try:
+            yield fetch_openml_dataset(identifier, dataset["quality"])
+        except Exception as e:
+            logger.error(f"Exception when processing dataset {identifier}")
+            logger.exception(e)
+
+
+def fetch_openml_dataset(identifier_: int, qualities: dict | None = None):
+    if not qualities:
+        raise NotImplemented("TODO: Fetch qualities separately")
+    url_data = f"https://www.openml.org/api/v1/json/data/{identifier_}"
+    response = requests.get(url_data, timeout=REQUEST_TIMEOUT)
+
+    if not response.ok:
+        status_code = response.status_code
+        msg = response.json()["error"]["message"]
+        err_msg = f"Error while fetching {url_data} from OpenML: ({status_code}) {msg}"
+        raise ServerError(err_msg)
+
+    try:
+        dataset_json = response.json()["data_set_description"]
+        qualities_json = {quality["name"]: quality["value"] for quality in qualities}
+        return dataset_json | {"qualities": qualities_json}
+    except Exception:
+        raise ParsingError(f"Error parsing JSON of dataset {response.content}")
+
+
+def _convert_dataset_to_aiod(dataset: dict) -> dict:
+    identifier = dataset["identifier"]
+
+    description = dataset["description"]
+    if isinstance(description, list) and len(description) == 0:
+        description = ""
+    if not isinstance(description, str):
+        logger.warning(f"Ignoring description {description} of dataset {identifier}.")
+        description = ""
+    if len(description) > MAX_DESCRIPTION_LENGTH:
         text_break = " [...]"
-        description = description[: MAX_TEXT - len(text_break)] + text_break
+        description = description[: MAX_DESCRIPTION_LENGTH - len(text_break)] + text_break
 
-    # Related Resources?
+    size = None
+    if n_rows := dataset["qualities"].get("NumberOfInstances"):
+        size = {
+            "unit": "instances",
+            "value": n_rows,
+        }
+
     return dict(
         platform=PLATFORM_NAME,
-        platform_resource_identifier=dataset._id,  # See REST API #385, #392
-        name=dataset.id,
-        same_as=f"https://huggingface.co/datasets/{dataset.id}",
+        platform_resource_identifier=identifier,
+        name=dataset["name"],
+        version=dataset["version"],
+        same_as=f"https://openml.org/d/{identifier}",
         description=dict(plain=description),
-        date_published=dataset.created_at.isoformat() if hasattr(dataset, "created_at") else None,
-        license=ds_license,
-        distribution=distributions,
-        is_accessible_for_free=not dataset.private,
-        keyword=dataset.tags,
+        date_published=dateutil.parser.parse(dataset["upload_date"]),
+        license=dataset.get("licence"),
+        distribution=[dict(content_url=dataset["url"], encoding_format=dataset["format"])],
+        is_accessible_for_free=True,
+        keyword=dataset.get("tag", []),
+        size=size,
     )
-
-
-def _get_distribution_data(dataset: DatasetInfo) -> list[dict]:
-    response = requests.get(
-        HUGGING_FACE_PARQUET_URL,
-        params={"dataset": dataset.id},
-        timeout=REQUEST_TIMEOUT
-    )
-    if not response.ok:
-        try:
-            msg = response.json()["error"]
-        except JSONDecodeError:
-            msg = response.content
-        except KeyError:
-            msg = response.json()
-        logger.warning(f"Unable to retrieve parquet info for dataset '{dataset.id}': '{msg}'")
-        return []
-    return [
-        dict(
-            name=pq_file["filename"],
-            description=f"{pq_file['dataset']}. Config: {pq_file['config']}. Split: "
-                        f"{pq_file['split']}",
-            content_url=pq_file["url"],
-            content_size_kb=math.ceil(pq_file["size"] / 1000),
-        )
-        for pq_file in response.json()["parquet_files"]
-    ]
 
 
 def delete_removed_assets() -> None:
@@ -110,28 +149,31 @@ def delete_removed_assets() -> None:
             datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
 
     for dataset in aiod_datasets():
-        if not dataset_info(dataset.name):
+        raise NotImplemented()
+        dataset_not_on_openml = False
+        if dataset_not_on_openml:
             logger.info(
                 f"Dataset {dataset.name} ({dataset.platform_resource_identifier}) "
-                f"no longer on Hugging Face. Removing asset from AI-on-Demand"
+                f"no longer on OpenML. Removing asset from AI-on-Demand"
             )
             aiod.datasets.delete(dataset['identifier'])
 
 
-def upsert_dataset(dataset: DatasetInfo) -> int:
+def upsert_dataset(dataset: dict) -> int:
     try:
         local_dataset = _convert_dataset_to_aiod(dataset)
+        identifier = dataset["identifier"]
 
         try:
             aiod_dataset = aiod.datasets.get_asset_from_platform(
                 platform=PLATFORM_NAME,
-                platform_identifier=dataset._id,
+                platform_identifier=identifier,
                 data_format="json",
             )
         except KeyError:
             response = aiod.datasets.register(metadata=local_dataset)
             if isinstance(response, str):
-                logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {response}")
+                logger.debug(f"Indexed dataset {identifier}: {response}")
                 return HTTPStatus.OK
             elif isinstance(response, requests.Response):
                 logger.warning(f"Error uploading dataset ({response.status_code}: {response.content}")
@@ -140,18 +182,19 @@ def upsert_dataset(dataset: DatasetInfo) -> int:
 
         if "identifier" not in aiod_dataset:
             raise RuntimeError(
-                f"Unexpected server response retrieving Hugging Face dataset "
-                f"{dataset.id} ({dataset._id}) from AI-on-Demand: {aiod_dataset}"
+                f"Unexpected server response retrieving OpenML dataset {identifier} "
+                f"from AI-on-Demand: {aiod_dataset}"
             )
 
         response = aiod.datasets.replace(identifier=aiod_dataset['identifier'], metadata=local_dataset)
         if response.status_code == HTTPStatus.OK:
-            logger.debug(f"Updated dataset {dataset.id}({dataset._id}): {aiod_dataset['identifier']}")
+            logger.debug(f"Updated dataset {identifier}: {aiod_dataset['identifier']}")
         else:
-            logger.warning(f"Could not update {aiod_dataset['identifier']} for repository {dataset.id} ({response.status_code}): {response.content}")
+            logger.warning(f"Could not update {aiod_dataset['identifier']} for openml dataset {identifier} "
+                           f"({response.status_code}): {response.content}")
     except Exception as e:
         logger.exception(
-            msg=f"Exception encountered when upserting dataset {dataset.id} ({dataset._id}.",
+            msg=f"Exception encountered when upserting dataset {identifier}.",
             exc_info=e,
         )
         if STOP_ON_UNEXPECTED_ERROR:
@@ -174,7 +217,9 @@ def parse_args():
         type=str,
         help=(
             "For mode 'ID' this must be an openml identifier. "
-            "For mode 'SINCE' this must be an openml identifier. Cannot be set with mode 'ALL'."
+            "For mode 'SINCE' this must be an openml identifier, this dataset and "
+            "all datasets with higher identifier will be indexed."
+            "Cannot be set with mode 'ALL'."
         )
     )
     log_levels = [level.lower() for level in logging.getLevelNamesMapping()]
@@ -218,16 +263,10 @@ def configure_connector():
 
     masked_token = '*' * (len(token) + 4) + token[-4:]
     logger.info(f"{'aiondemand version:':25} {aiod.version}")
-    logger.info(f"{'hugging face hub version:':25} {huggingface_hub.__version__}")
     logger.info(f"{'STOP_ON_UNEXPECTED_ERROR:':25} {STOP_ON_UNEXPECTED_ERROR}")
     logger.info(f"{'PER_DATASET_DELAY:':25} {PER_DATASET_DELAY}")
     logger.info(f"{'AI-on-Demand API server:':25} {aiod.config.api_server}")
     logger.info(f"{'Platform Name:':25} {PLATFORM_NAME}")
-    if HUGGING_FACE_API_KEY:
-        masked_hf_key = '*' * (len(HUGGING_FACE_API_KEY) + 4) + HUGGING_FACE_API_KEY[-4:] if HUGGING_FACE_API_KEY else 'not set'
-    else:
-        masked_hf_key = 'not set'
-    logger.info(f"{'Hugging Face API key:':25} {masked_hf_key}")
     logger.info(f"{'Authentication server:':25} {aiod.config.auth_server}")
     logger.info(f"{'Client ID:':25} {aiod.config.client_id}")
     logger.info(f"{'Using secret:':25} {masked_token}")
@@ -254,18 +293,15 @@ def main():
 
     match (args.mode, args.value):
         case Modes.ID, id_:
-            dataset = dataset_info(id_)
+            dataset = fetch_openml_dataset(id_)
             upsert_dataset(dataset)
         case Modes.SINCE, id_:
-            parsed_time = datetime.fromisoformat(timestamp).replace(tzinfo=dt.UTC)
-            for dataset in list_datasets(full=True, sort="last_modified", direction=-1, token=HUGGING_FACE_API_KEY):
-                if dataset.last_modified < parsed_time:
-                    break
+            for dataset in list_datasets(from_=id_):
                 upsert_dataset(dataset)
                 if PER_DATASET_DELAY:
                     time.sleep(PER_DATASET_DELAY)
         case Modes.ALL, None:
-            for dataset in list_datasets(full=True, token=HUGGING_FACE_API_KEY):
+            for dataset in list_datasets():
                 upsert_dataset(dataset)
                 if PER_DATASET_DELAY:
                     time.sleep(PER_DATASET_DELAY)
