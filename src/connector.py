@@ -44,17 +44,19 @@ def list_datasets(from_: int | None = None):
     def paginate_all_datasets(items_per_page: int = 50):
         url_data = f"https://www.openml.org/api/v1/json/data/list/limit/{items_per_page}/offset/{{offset}}"
         for offset in range(0, 1_000_000, items_per_page):
-            response = requests.get(url_data.format(offset), timeout=REQUEST_TIMEOUT)
+            response = requests.get(url_data.format(offset=offset), timeout=REQUEST_TIMEOUT)
             if not response.ok:
                 status_code = response.status_code
                 msg = response.json()["error"]["message"]
                 err_msg = f"Error while fetching {url_data} from OpenML: ({status_code}) {msg}"
                 raise ServerError(err_msg)
+            logger.debug(f"Paging through datasets (offset {offset})")
 
             try:
                 dataset_summaries = response.json()["data"]["dataset"]
                 if dataset_summaries:
                     yield from dataset_summaries
+                    logger.debug(f"Paged through datasets (total {len(dataset_summaries)})")
                 else:
                     break
             except Exception:
@@ -79,7 +81,21 @@ def list_datasets(from_: int | None = None):
 
 def fetch_openml_dataset(identifier_: int, qualities: dict | None = None):
     if not qualities:
-        raise NotImplemented("TODO: Fetch qualities separately")
+        qualities_url = f"https://www.openml.org/api/v1/json/data/qualities/{identifier_}"
+        qualities_response = requests.get(
+            qualities_url,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if not qualities_response.ok:
+            status_code = qualities_response.status_code
+            msg = qualities_response.json()["error"]["message"]
+            err_msg = f"Error while fetching {qualities_url} from OpenML: ({status_code}) {msg}"
+            raise ServerError(err_msg)
+        try:
+            qualities = qualities_response.json()["data_qualities"]["quality"]
+        except:
+            raise ParsingError(f"Error parsing JSON of qualities of dataset {qualities_response.content}")
+
     url_data = f"https://www.openml.org/api/v1/json/data/{identifier_}"
     response = requests.get(url_data, timeout=REQUEST_TIMEOUT)
 
@@ -98,7 +114,7 @@ def fetch_openml_dataset(identifier_: int, qualities: dict | None = None):
 
 
 def _convert_dataset_to_aiod(dataset: dict) -> dict:
-    identifier = dataset["identifier"]
+    identifier = dataset["id"]
 
     description = dataset["description"]
     if isinstance(description, list) and len(description) == 0:
@@ -114,7 +130,7 @@ def _convert_dataset_to_aiod(dataset: dict) -> dict:
     if n_rows := dataset["qualities"].get("NumberOfInstances"):
         size = {
             "unit": "instances",
-            "value": n_rows,
+            "value": int(float(n_rows)),  # OpenML adds the decimal: xxx.0
         }
 
     return dict(
@@ -124,7 +140,7 @@ def _convert_dataset_to_aiod(dataset: dict) -> dict:
         version=dataset["version"],
         same_as=f"https://openml.org/d/{identifier}",
         description=dict(plain=description),
-        date_published=dateutil.parser.parse(dataset["upload_date"]),
+        date_published=dateutil.parser.parse(dataset["upload_date"]).isoformat(),
         license=dataset.get("licence"),
         distribution=[dict(content_url=dataset["url"], encoding_format=dataset["format"])],
         is_accessible_for_free=True,
@@ -134,9 +150,9 @@ def _convert_dataset_to_aiod(dataset: dict) -> dict:
 
 
 def upsert_dataset(dataset: dict) -> int:
+    identifier = dataset["id"]
     try:
         local_dataset = _convert_dataset_to_aiod(dataset)
-        identifier = dataset["identifier"]
 
         try:
             aiod_dataset = aiod.datasets.get_asset_from_platform(
@@ -151,6 +167,7 @@ def upsert_dataset(dataset: dict) -> int:
                 return HTTPStatus.OK
             elif isinstance(response, requests.Response):
                 logger.warning(f"Error uploading dataset ({response.status_code}: {response.content}")
+                breakpoint()
                 return response.status_code
             raise
 
@@ -267,10 +284,16 @@ def main():
 
     match (args.mode, args.value):
         case Modes.ID, id_:
-            dataset = fetch_openml_dataset(id_)
+            if not id_.isdigit():
+                logger.error(f"Identifier specified should be an integer, is {id_!r}")
+                quit(1)
+            dataset = fetch_openml_dataset(int(id_))
             upsert_dataset(dataset)
         case Modes.SINCE, id_:
-            for dataset in list_datasets(from_=id_):
+            if not id_.isdigit():
+                logger.error(f"Identifier specified should be an integer, is {id_!r}")
+                quit(1)
+            for dataset in list_datasets(from_=int(id_)):
                 upsert_dataset(dataset)
                 if PER_DATASET_DELAY:
                     time.sleep(PER_DATASET_DELAY)

@@ -13,12 +13,12 @@ This package is work in progress.
 ## Installation
 You can use the image directly from Docker Hub (TODO) or build it locally.
 
-From Docker Hub: `docker pull aiondemand/huggingface-connector`.
+From Docker Hub: `docker pull aiondemand/openml-connector`.
 
 To build a local image:
 
- - Clone the repository: `git clone https://github.com/aiondemand/huggingface-connector && cd huggingface-connector`
- - Build the image: `docker build -t aiondemand/huggingface-connector -f Dockerfile .`
+ - Clone the repository: `git clone https://github.com/aiondemand/openml-connector && cd openml-connector`
+ - Build the image: `docker build -t aiondemand/openml-connector -f Dockerfile .`
 
 ### Configuring Client Credentials
 You will need to configure what server the connector should connect to, as well as the credentials for the client that allow you to upload data.
@@ -30,15 +30,15 @@ The client secret must be provided to the Docker container as an environment var
 Please contact the Keycloak service maintainer to obtain said credentials you need if you are in charge of deploying this Hugging Face connector.
 
 ## Running the Connector
-You will need to mount the aiondemand configuration to `/home/appuser/.aiod/config.toml` and provide environment variables directly with `-e` or through mounting the dotfile in `/home/appuser/.aiod/huggingface/.env`. The [`script/run.sh`](script/run.sh) script provides a convenience that automatically does this. 
+You will need to mount the aiondemand configuration to `/home/appuser/.aiod/config.toml` and provide environment variables directly with `-e` or through mounting the dotfile in `/home/appuser/.aiod/openml/.env`. The [`script/run.sh`](script/run.sh) script provides a convenience that automatically does this. 
 It takes one positional argument that has to be `local`, `test`, or `prod` to use the respective files in the `script` folder for configuration.
 Any following arguments are interpreted as arguments to the main script.
-For the latest commandline arguments, use `docker run aiondemand/huggingface-connector --help`.
+For the latest commandline arguments, use `docker run aiondemand/openml-connector --help`.
 Some example invocations that use the `script/run.sh` script:
 
- - `script/run.sh local --mode id --value omarkamali/wikipedia-monthly --app-log-level debug` syncs one specific hugging face dataset, and produces debug logs for the connector only.
- - `script/run.sh test --mode since --value 2025-09-30T00:00 --root-log-level debug` syncs all datasets modified after 2025-09-30T00:00 (in reverse chronological order).
- - `script/run.sh prod --mode all --root-log-level info` indexes all datasets on Hugging Face, producing info logs for the connector and all its dependencies (this is the default).
+ - `script/run.sh local --mode id --value 61 --app-log-level debug` syncs one specific openml dataset, and produces debug logs for the connector only.
+ - `script/run.sh test --mode since --value 100 --root-log-level debug` syncs all datasets with identifier 100 or greater (in ascending order).
+ - `script/run.sh prod --mode all --root-log-level info` indexes all datasets on OpenML, producing info logs for the connector and all its dependencies (this is the default).
 
 ## Development
 You can test the connector when running the [metadata catalogue](https://github.com/aiondemand/aiod-rest-api) locally.
@@ -49,4 +49,4 @@ See [this form]() to apply for a client. The client will need to have a `platfor
 When a client is created, you will need its 'Client ID' and 'Client Secret' and update the relevant configuration and environment files accordingly.
 
 ## Disclaimer
-This project is not affiliated with Hugging Face in any way.
+This project is not affiliated with OpenML in any way.

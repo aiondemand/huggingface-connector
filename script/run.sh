@@ -18,7 +18,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 docker run \
-  -v "${ENV_FILE}":/home/appuser/.aiod/huggingface/.env \
+  -v "${ENV_FILE}":/home/appuser/.aiod/openml/.env \
   -v "${CONFIG_FILE}":/home/appuser/.aiod/config.toml \
   --network=host \
-  -it aiondemand/huggingface-connector "$@"
+  -it aiondemand/openml-connector "$@"
