@@ -21,4 +21,5 @@ docker run \
   -v "${ENV_FILE}":/home/appuser/.aiod/huggingface/.env \
   -v "${CONFIG_FILE}":/home/appuser/.aiod/config.toml \
   --network=host \
+  --name aiod-huggingface-connector \
   -it aiondemand/huggingface-connector "$@"
