@@ -138,7 +138,7 @@ def _convert_dataset_to_aiod(dataset: dict) -> dict:
         platform_resource_identifier=identifier,
         name=dataset["name"],
         version=dataset["version"],
-        same_as=f"https://openml.org/d/{identifier}",
+        same_as=f"https://www.openml.org/api/v1/json/data/{identifier}",
         description=dict(plain=description),
         date_published=dateutil.parser.parse(dataset["upload_date"]).isoformat(),
         license=dataset.get("licence"),

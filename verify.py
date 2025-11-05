@@ -11,20 +11,9 @@ had its keywords and distributions updated.
 from http import HTTPStatus
 from typing import Iterable
 
-from huggingface_hub import dataset_info
 import requests
 
-repositories = [
-    "fka/awesome-chatgpt-prompts",
-    "facebook/seamless-interaction",
-    "FreedomIntelligence/medical-o1-reasoning-SFT",
-    # "wikimedia/wikipedia",  # too many distributions
-    # "nvidia/Nemotron-Personas-Japan",  # these and below are not on prod
-    # "t-tech/T-ECD",
-    # "zai-org/CC-Bench-trajectories",
-    # "smolagents/aguvis-stage-2",
-]
-
+repositories = list(range(1000, 1009))
 LOCAL_API = "http://localhost/"
 PRODUCTION_API = "https://api.aiod.eu/"
 
@@ -60,10 +49,9 @@ def diff(local: dict, prod: dict, ignore: Iterable | None = None):
 
 
 for repo in repositories:
-    dataset = dataset_info(repo)
-    local = requests.get(f"{LOCAL_API}platforms/example/datasets/{dataset._id}")
+    local = requests.get(f"{LOCAL_API}platforms/example/datasets/{repo}")
     assert local.status_code == HTTPStatus.OK, (local.reason, local.content, repo)
-    prod = requests.get(f"{PRODUCTION_API}platforms/huggingface/datasets/{dataset._id}")
+    prod = requests.get(f"{PRODUCTION_API}platforms/openml/datasets/{repo}")
     assert prod.status_code == HTTPStatus.OK, (prod.reason, prod.content, repo)
     print(f"Comparing {repo}")
     diff(local.json(), prod.json())
