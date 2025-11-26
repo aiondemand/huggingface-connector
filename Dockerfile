@@ -1,5 +1,16 @@
 FROM python:3.13.7-trixie
 
+# Install CA infrastructure
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Add AIoD cert and build custom bundle
+RUN mkdir -p /certs
+COPY certs/aiod-insight-centre.crt /certs/aiod-insight-centre.crt
+RUN cat /etc/ssl/certs/ca-certificates.crt /certs/aiod-insight-centre.crt > /certs/custom-ca-bundle.crt
+
+# Make Python requests use the custom CA bundle
+ENV REQUESTS_CA_BUNDLE=/certs/custom-ca-bundle.crt
+
 RUN useradd -m appuser
 USER appuser
 WORKDIR /home/appuser
