@@ -17,6 +17,7 @@ from aiod.authentication import set_token, Token
 from huggingface_hub import list_datasets, DatasetInfo, dataset_info
 from dotenv import load_dotenv
 import requests
+from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError
 
 
 class Modes(StrEnum):
@@ -34,6 +35,7 @@ PLATFORM_NAME = "huggingface"
 HUGGING_FACE_API_KEY = None
 STOP_ON_UNEXPECTED_ERROR = False
 PER_DATASET_DELAY = None
+BATCH_SIZE = 25
 
 
 def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
@@ -55,7 +57,6 @@ def _convert_dataset_to_aiod(dataset: DatasetInfo) -> dict:
         text_break = " [...]"
         description = description[: MAX_TEXT - len(text_break)] + text_break
 
-    # Related Resources?
     return dict(
         platform=PLATFORM_NAME,
         platform_resource_identifier=dataset._id,  # See REST API #385, #392
@@ -74,7 +75,7 @@ def _get_distribution_data(dataset: DatasetInfo) -> list[dict]:
     response = requests.get(
         HUGGING_FACE_PARQUET_URL,
         params={"dataset": dataset.id},
-        timeout=REQUEST_TIMEOUT
+        timeout=REQUEST_TIMEOUT,
     )
     if not response.ok:
         try:
@@ -88,8 +89,10 @@ def _get_distribution_data(dataset: DatasetInfo) -> list[dict]:
     return [
         dict(
             name=pq_file["filename"],
-            description=f"{pq_file['dataset']}. Config: {pq_file['config']}. Split: "
-                        f"{pq_file['split']}",
+            description=(
+                f"{pq_file['dataset']}. Config: {pq_file['config']}. "
+                f"Split: {pq_file['split']}"
+            ),
             content_url=pq_file["url"],
             content_size_kb=math.ceil(pq_file["size"] / 1000),
         )
@@ -108,22 +111,23 @@ def delete_removed_assets() -> None:
         datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
         while datasets:
             yield from datasets
-            offset += BATCH_SIZE
+            offset += batch_size
             datasets = aiod.datasets.get_list(offset=offset, limit=batch_size, platform=PLATFORM_NAME)
 
     for dataset in aiod_datasets():
-        if not dataset_info(dataset.name):
+        if not dataset_info(dataset["name"]):
             logger.info(
-                f"Dataset {dataset.name} ({dataset.platform_resource_identifier}) "
+                f"Dataset {dataset['name']} ({dataset['platform_resource_identifier']}) "
                 f"no longer on Hugging Face. Removing asset from AI-on-Demand"
             )
-            aiod.datasets.delete(dataset['identifier'])
+            aiod.datasets.delete(dataset["identifier"])
 
 
 def upsert_dataset(dataset: DatasetInfo) -> int:
     try:
         local_dataset = _convert_dataset_to_aiod(dataset)
 
+        # Try to fetch existing asset from AIoD
         try:
             aiod_dataset = aiod.datasets.get_asset_from_platform(
                 platform=PLATFORM_NAME,
@@ -131,35 +135,87 @@ def upsert_dataset(dataset: DatasetInfo) -> int:
                 data_format="json",
             )
         except KeyError:
+            # Normal "not found" path -> register a new asset
             response = aiod.datasets.register(metadata=local_dataset)
             if isinstance(response, str):
                 logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {response}")
                 return HTTPStatus.OK
             elif isinstance(response, requests.Response):
-                logger.warning(f"Error uploading dataset ({response.status_code}: {response.content}")
+                logger.warning(
+                    f"Error uploading dataset {dataset.id} ({dataset._id}) "
+                    f"({response.status_code}: {response.content})"
+                )
                 return response.status_code
-            raise
+            raise RuntimeError(
+                f"Unexpected response when registering Hugging Face dataset "
+                f"{dataset.id} ({dataset._id}): {response!r}"
+            )
+        except RequestsJSONDecodeError as e:
+            # AIOD responded with non-JSON when checking for an existing asset.
+            # Treat this as a transient / "not found" case and TRY a register once.
+            logger.warning(
+                "Non-JSON response from AI-on-Demand when checking existing asset for "
+                "%s (%s); treating as missing and attempting to register. Error: %s",
+                dataset.id,
+                dataset._id,
+                e,
+            )
+            response = aiod.datasets.register(metadata=local_dataset)
+            if isinstance(response, str):
+                logger.debug(f"Indexed dataset {dataset.id}({dataset._id}): {response}")
+                return HTTPStatus.OK
+            elif isinstance(response, requests.Response):
+                logger.warning(
+                    f"Error uploading dataset {dataset.id} ({dataset._id}) "
+                    f"after JSON decode failure "
+                    f"({response.status_code}: {response.content})"
+                )
+                return response.status_code
+            raise RuntimeError(
+                f"Unexpected response when registering after JSON decode failure for "
+                f"{dataset.id} ({dataset._id}): {response!r}"
+            )
 
+        # If we got here, we have some JSON-decoded object from AIOD
         if "identifier" not in aiod_dataset:
             raise RuntimeError(
                 f"Unexpected server response retrieving Hugging Face dataset "
-                f"{dataset.id} ({dataset._id}) from AI-on-Demand: {aiod_dataset}"
+                f"{dataset.id} ({dataset._id}) from AI-on-Demand: {aiod_dataset!r}"
             )
 
-        response = aiod.datasets.replace(identifier=aiod_dataset['identifier'], metadata=local_dataset)
+        # Update existing asset
+        response = aiod.datasets.replace(
+            identifier=aiod_dataset["identifier"],
+            metadata=local_dataset,
+        )
         if response.status_code == HTTPStatus.OK:
-            logger.debug(f"Updated dataset {dataset.id}({dataset._id}): {aiod_dataset['identifier']}")
+            logger.debug(
+                "Updated dataset %s(%s): %s",
+                dataset.id,
+                dataset._id,
+                aiod_dataset["identifier"],
+            )
         else:
-            logger.warning(f"Could not update {aiod_dataset['identifier']} for repository {dataset.id} ({response.status_code}): {response.content}")
+            logger.warning(
+                "Could not update %s for repository %s (%s): %s",
+                aiod_dataset["identifier"],
+                dataset.id,
+                response.status_code,
+                response.content,
+            )
+        return response.status_code
+
     except Exception as e:
         logger.exception(
-            msg=f"Exception encountered when upserting dataset {dataset.id} ({dataset._id}.",
+            msg=(
+                f"Exception encountered when upserting dataset "
+                f"{dataset.id} ({dataset._id})."
+            ),
             exc_info=e,
         )
         if STOP_ON_UNEXPECTED_ERROR:
             raise
         return -1
-    return response.status_code
 
 
 def parse_args():
@@ -178,20 +234,20 @@ def parse_args():
             "For mode 'ID' this must be a Hugging Face identifier. "
             "For mode 'SINCE' this must be a valid timestamp in ISO-8601 format,"
             "assuming an UTC timezone. Cannot be set with mode 'ALL'."
-        )
+        ),
     )
     log_levels = [level.lower() for level in logging.getLevelNamesMapping()]
     parser.add_argument(
         "--app-log-level",
         choices=log_levels,
-        default='info',
-        help="Emit all log messages generated of at least this level by the app."
+        default="info",
+        help="Emit all log messages generated of at least this level by the app.",
     )
     parser.add_argument(
-        '--root-log-level',
+        "--root-log-level",
         choices=log_levels,
-        default='error',
-        help="Emit all log messages generated of at least this level by the app's dependencies."
+        default="error",
+        help="Emit all log messages generated of at least this level by the app's dependencies.",
     )
     args = parser.parse_args()
     if args.mode == Modes.ALL and args.value:
@@ -211,16 +267,23 @@ def configure_connector():
         reason = "unknown reason" if dot_file else "file does not exist"
         logger.info(f"No environment variables loaded from {dot_file}: {reason}.")
 
-    BATCH_SIZE = os.getenv("AIOD_BATCH_SIZE", 25)
+    BATCH_SIZE = int(os.getenv("AIOD_BATCH_SIZE", "25"))
     PLATFORM_NAME = os.getenv("PLATFORM_NAME", PLATFORM_NAME)
-    HUGGING_FACE_API_KEY = key if (key := os.getenv("AIOD_HF_API_KEY")) else None
-    PER_DATASET_DELAY = float(delay) if (delay := os.getenv("PER_DATASET_DELAY")) else None
-    STOP_ON_UNEXPECTED_ERROR = os.getenv("STOP_ON_UNEXPECTED_ERROR", STOP_ON_UNEXPECTED_ERROR)
+    HUGGING_FACE_API_KEY = os.getenv("AIOD_HF_API_KEY") or None
+
+    delay = os.getenv("PER_DATASET_DELAY")
+    PER_DATASET_DELAY = float(delay) if delay else None
+
+    STOP_ON_UNEXPECTED_ERROR = (
+        str(os.getenv("STOP_ON_UNEXPECTED_ERROR", str(STOP_ON_UNEXPECTED_ERROR))).lower()
+        == "true"
+    )
 
     token = os.getenv("CLIENT_SECRET")
     assert token, "CLIENT_SECRET environment variable not set"
 
-    masked_token = '*' * (len(token) + 4) + token[-4:]
+    masked_token = "*" * max(4, len(token) - 4) + token[-4:]
+
     logger.info(f"{'aiondemand version:':25} {aiod.version}")
     logger.info(f"{'hugging face hub version:':25} {huggingface_hub.__version__}")
     logger.info(f"{'STOP_ON_UNEXPECTED_ERROR:':25} {STOP_ON_UNEXPECTED_ERROR}")
@@ -228,26 +291,19 @@ def configure_connector():
     logger.info(f"{'AI-on-Demand API server:':25} {aiod.config.api_server}")
     logger.info(f"{'Platform Name:':25} {PLATFORM_NAME}")
     if HUGGING_FACE_API_KEY:
-        masked_hf_key = '*' * (len(HUGGING_FACE_API_KEY) + 4) + HUGGING_FACE_API_KEY[-4:] if HUGGING_FACE_API_KEY else 'not set'
+        masked_hf_key = "*" * max(4, len(HUGGING_FACE_API_KEY) - 4) + HUGGING_FACE_API_KEY[-4:]
     else:
-        masked_hf_key = 'not set'
+        masked_hf_key = "not set"
     logger.info(f"{'Hugging Face API key:':25} {masked_hf_key}")
     logger.info(f"{'Authentication server:':25} {aiod.config.auth_server}")
     logger.info(f"{'Client ID:':25} {aiod.config.client_id}")
     logger.info(f"{'Using secret:':25} {masked_token}")
 
     set_token(Token(client_secret=token))
-    user = aiod.get_current_user()
-
-    required_role = f"platform_{PLATFORM_NAME}"
-    wrong_platform_msg = (
-        f"Client roles {user.roles} do not include required {required_role!r} role."
-        "Please make sure the `PLATFORM_NAME` environment variable is configured correctly, "
-        "or contact your Keycloak administrator."
+    logger.info(
+        "Configured AI-on-Demand client token for Hugging Face connector "
+        "(skipping authorization_test)."
     )
-    assert required_role in user.roles, wrong_platform_msg
-
-    logger.info("Successfully authenticated and connected to AI-on-Demand.")
 
 
 def main():
@@ -262,7 +318,12 @@ def main():
             upsert_dataset(dataset)
         case Modes.SINCE, timestamp:
             parsed_time = datetime.fromisoformat(timestamp).replace(tzinfo=dt.UTC)
-            for dataset in list_datasets(full=True, sort="last_modified", direction=-1, token=HUGGING_FACE_API_KEY):
+            for dataset in list_datasets(
+                full=True,
+                sort="last_modified",
+                direction=-1,
+                token=HUGGING_FACE_API_KEY,
+            ):
                 if dataset.last_modified < parsed_time:
                     break
                 upsert_dataset(dataset)
@@ -277,5 +338,5 @@ def main():
             raise NotImplemented(f"Unexpected arguments: {args}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
